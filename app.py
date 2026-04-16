@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+APP_VERSION = "0.5.0"
+
 # Histórico de conversa por chat_id: { chat_id: [{"role": "user/assistant", "content": "..."}] }
 conversation_history = {}
 
@@ -29,96 +31,104 @@ AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 BEDROCK_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
 KB_ID = os.environ.get("KB_ID", "LY3SXOJI2N")
 
-SYSTEM_PROMPT = """Você é o assistente corporativo "Orçamentista Leograf".
-Sua função é validar automaticamente solicitações de orçamento gráfico enviadas por vendedores internos antes de encaminhar para análise técnica do time de orçamentos.
+SYSTEM_PROMPT = """Voce eh o Orcamentista Leograf, assistente que valida solicitacoes de orcamento grafico antes de encaminhar ao time de orcamentos.
 
-OBJETIVO DO ASSISTENTE
-Validar se a solicitação contém todos os campos obrigatórios:
-- Produto
-- Quantidade
-- Formato
-- Papel
-- Gramatura
-- Cores
-- Acabamento
+REGRA ABSOLUTA DE FORMATACAO:
+- NUNCA use Markdown na resposta (nada de **, __, `, ```, #, >, etc.)
+- Texto puro sempre, sem formatacao
 
-INTERPRETAÇÃO DAS SOLICITAÇÕES
-Aceite mensagens:
-- curtas
-- fora de ordem
-- parcialmente estruturadas
-- com abreviações técnicas
-- estilo WhatsApp
+QUANDO O VENDEDOR ENVIAR UMA SAUDACAO (oi, ola, bom dia, boa tarde, etc.) OU MENSAGEM SEM DADOS DE ORCAMENTO:
+Responda EXATAMENTE com o texto, sem alterar nada:
 
-Exemplo válido:
-folder 1000 couche 4x4 dobra simples
+(Ola! Sou o Orcamentista Leograf.
 
-DEFINIÇÃO DOS CAMPOS
-Produto: tipo de material gráfico solicitado
-Quantidade: volume solicitado
-Formato: dimensão final do material
-Papel: material base de impressão
-Gramatura: peso do papel em g/m²
-Cores: padrão frente x verso (exemplo: 4x4, 4x0, 1x1)
-Acabamento: processos adicionais após impressão
+Para validar seu pedido, preciso das seguintes informacoes:
 
-REGRAS DE VALIDAÇÃO
-Se algum campo obrigatório estiver ausente: listar apenas os campos faltantes
-Se houver inconsistência técnica: informar de forma objetiva
-Exemplo: cartão de visita em papel 90g → gramatura incompatível com produto
+- Produto (ex: folder, flyer, cartao de visita)
+- Quantidade (volume desejado)
+- Formato (dimensoes do material, ex: A4, 20x20cm)
+- Papel (ex: couche, offset, triplex)
+- Gramatura (peso do papel em g/m2, ex: 115g, 300g)
+- Cores (padrao frente x verso, ex: 4x4, 4x0, 1x0)
+- Acabamento (ex: laminacao, verniz, dobra, refile)
 
-SUGESTÕES AUTOMÁTICAS INTELIGENTES
-Se faltar PAPEL: sugerir opções compatíveis com o produto informado
-Se faltar GRAMATURA: sugerir gramaturas compatíveis com o papel informado
-Se faltar CORES: sugerir padrões comuns compatíveis com o produto informado
-Se faltar ACABAMENTO: sugerir acabamentos comuns compatíveis com o produto informado
-Nunca escolher automaticamente pelo vendedor. Sempre solicitar confirmação.
+Pode enviar tudo junto numa mensagem so, tipo:
+folder 1000 A4 couche 115g 4x4 dobra simples
 
-FORMATO DE RESPOSTA — PENDÊNCIAS
-Se existirem campos faltantes, responder exatamente assim:
-Pendências identificadas no pedido:
-- campo X
-- campo Y
+Aguardo os dados do seu pedido!)
 
-Se existirem sugestões técnicas, adicionar:
-Sugestões técnicas:
-- sugestão 1
-- sugestão 2
-- sugestâo 3
+QUANDO O VENDEDOR ENVIAR DADOS DE ORCAMENTO:
+Analise a mensagem e identifique os 7 campos obrigatorios:
+1. Produto - tipo de material grafico
+2. Quantidade - volume solicitado
+3. Formato - dimensao final
+4. Papel - material base de impressao
+5. Gramatura - peso do papel em g/m2
+6. Cores - padrao frente x verso
+7. Acabamento - processos apos impressao
 
-Finalizar sempre com:
-Favor complementar as informações para continuidade do orçamento.
+Aceite mensagens curtas, fora de ordem, com abreviacoes tecnicas, estilo WhatsApp.
 
-FORMATO DE RESPOSTA — PEDIDO COMPLETO
-Se todos os campos estiverem presentes, responder exatamente assim:
+SE FALTAR ALGUM CAMPO, responda assim:
+
+Pendencias identificadas no pedido:
+- [campo faltante 1]
+- [campo faltante 2]
+- [campo faltante 3]
+- [campo faltante 4]
+
+
+Sugestoes tecnicas:
+- [sugestao compativel com o produto/papel informado]
+
+Favor complementar as informacoes para continuidade do orcamento.
+
+SE TODOS OS CAMPOS ESTIVEREM PRESENTES, responda assim:
+
 Pedido completo.
 
 Resumo do pedido:
-- Produto: <valor identificado>
-- Quantidade: <valor identificado>
-- Formato: <valor identificado>
-- Papel: <valor identificado>
-- Gramatura: <valor identificado>
-- Cores: <valor identificado>
-- Acabamento: <valor identificado>
+- Produto: [valor]
+- Quantidade: [valor]
+- Formato: [valor]
+- Papel: [valor]
+- Gramatura: [valor]
+- Cores: [valor]
+- Acabamento: [valor]
 
-Encaminhando para análise técnica.
+Encaminhando para analise tecnica.
 
-RESTRIÇÕES IMPORTANTES
-Nunca:
-- calcular preços
-- estimar prazo
-- alterar dados informados
-- assumir informações não fornecidas
-- ignorar inconsistências técnicas
+REGRAS DE VALIDACAO:
+- Se houver inconsistencia tecnica, informe (ex: cartao de visita em 90g = gramatura incompativel)
+- Se faltar papel, sugira opcoes compativeis com o produto
+- Se faltar gramatura, sugira compativeis com o papel
+- Nunca escolha pelo vendedor, sempre peca confirmacao
 
-PADRÃO DE RESPOSTA
-Sempre responder:
-- curto
-- objetivo
-- profissional
-- estruturado em lista
-- com uma informação por linha"""
+RESTRICOES:
+- Nunca calcule precos
+- Nunca estime prazo
+- Nunca altere dados informados
+- Nunca assuma informacoes nao fornecidas
+- Nunca ignore inconsistencias tecnicas
+- Nunca use formatacao Markdown"""
+
+
+WELCOME_MESSAGE = """Ola! Sou o Orcamentista Leograf.
+
+Para validar seu pedido, preciso das seguintes informacoes:
+
+- Produto (ex: folder, flyer, cartao de visita)
+- Quantidade (volume desejado)
+- Formato (dimensoes do material, ex: A4, 20x20cm)
+- Papel (ex: couche, offset, triplex)
+- Gramatura (peso do papel em g/m2, ex: 115g, 300g)
+- Cores (padrao frente x verso, ex: 4x4, 4x0, 1x0)
+- Acabamento (ex: laminacao, verniz, dobra, refile)
+
+Pode enviar tudo junto numa mensagem so, tipo:
+folder 1000 A4 couche 115g 4x4 dobra simples
+
+Aguardo os dados do seu pedido!"""
 
 
 @app.route("/webhook", methods=["POST"])
@@ -137,7 +147,7 @@ def webhook():
         return jsonify({"ok": True})
 
     # Comandos de controle
-    if text.lower() in ["/start", "/novo", "/reiniciar"]:
+    if text.lower() in ["/start", "/novo", "/reiniciar", "/clear"]:
         conversation_history.pop(chat_id, None)
         send_message_to_telegram(
             token=TELEGRAM_ORCAMENTOS_TOKEN,
@@ -150,6 +160,26 @@ def webhook():
 
     # Adiciona mensagem do usuário ao histórico
     history = conversation_history.setdefault(chat_id, [])
+
+    # Primeira interação do chat (sem resposta anterior) → manda mensagem padrão
+    has_assistant_reply = any(m["role"] == "assistant" for m in history)
+    logger.info("chat_id=%s | historico=%d msgs | has_assistant=%s", chat_id, len(history), has_assistant_reply)
+    if not has_assistant_reply:
+        history.append({"role": "user", "content": text})
+        history.append({"role": "assistant", "content": WELCOME_MESSAGE})
+        send_message_to_telegram(
+            token=TELEGRAM_ORCAMENTOS_TOKEN,
+            chat_id=chat_id,
+            text=WELCOME_MESSAGE
+        )
+        return jsonify({"ok": True})
+        send_message_to_telegram(
+            token=TELEGRAM_ORCAMENTOS_TOKEN,
+            chat_id=chat_id,
+            text=WELCOME_MESSAGE
+        )
+        return jsonify({"ok": True})
+
     history.append({"role": "user", "content": text})
 
     try:
@@ -179,7 +209,7 @@ def webhook():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "ok", "version": APP_VERSION})
 
 
 # --- Parsing ---
@@ -293,8 +323,24 @@ def forward_to_orcamentista(ai_response):
 
 # --- Telegram ---
 
+import re
+
+
+def strip_markdown(text):
+    """Remove formatação Markdown para exibição limpa no Telegram."""
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)   # **negrito**
+    text = re.sub(r'__(.+?)__', r'\1', text)        # __negrito__
+    text = re.sub(r'\*(.+?)\*', r'\1', text)        # *itálico*
+    text = re.sub(r'_(.+?)_', r'\1', text)          # _itálico_
+    text = re.sub(r'```.*?```', '', text, flags=re.DOTALL)  # ```bloco```
+    text = re.sub(r'`(.+?)`', r'\1', text)          # `código`
+    return text
+
+
 def send_message_to_telegram(token, chat_id, text, parse_mode=None):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
+    if not parse_mode:
+        text = strip_markdown(text)
     payload = {"chat_id": chat_id, "text": text}
     if parse_mode:
         payload["parse_mode"] = parse_mode
@@ -325,5 +371,5 @@ class BedrockError(Exception):
 
 
 if __name__ == "__main__":
-    logger.info("Iniciando servidor local na porta 5000...")
+    logger.info("Leograf Orcamentos v%s - Iniciando servidor na porta 5000...", APP_VERSION)
     app.run(host="0.0.0.0", port=5000, debug=False)

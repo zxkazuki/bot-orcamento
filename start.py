@@ -55,7 +55,7 @@ def main():
     TELEGRAM_TOKEN = os.environ.get("TELEGRAM_ORCAMENTOS_TOKEN", "")
 
     print("=" * 50)
-    print("  Leograf Orcamentos - Iniciando...")
+    print("  Leograf Orcamentos v0.5.0 - Iniciando...")
     print("=" * 50)
 
     # Sobe Flask em thread
