@@ -25,9 +25,9 @@ TELEGRAM_ORCAMENTOS_TOKEN = os.environ.get("TELEGRAM_ORCAMENTOS_TOKEN", "")
 TELEGRAM_ORCAMENTISTA_TOKEN = os.environ.get("TELEGRAM_ORCAMENTISTA_TOKEN", "")
 CHAT_ID_ORCAMENTISTA = os.environ.get("CHAT_ID_ORCAMENTISTA", "")
 
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 BEDROCK_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
 KB_ID = os.environ.get("KB_ID", "LY3SXOJI2N")
-AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 SYSTEM_PROMPT = """Você é o assistente corporativo "Orçamentista Leograf".
 Sua função é validar automaticamente solicitações de orçamento gráfico enviadas por vendedores internos antes de encaminhar para análise técnica do time de orçamentos.
@@ -84,6 +84,7 @@ Se existirem sugestões técnicas, adicionar:
 Sugestões técnicas:
 - sugestão 1
 - sugestão 2
+- sugestâo 3
 
 Finalizar sempre com:
 Favor complementar as informações para continuidade do orçamento.
@@ -200,49 +201,43 @@ def parse_telegram_event(body):
 
 def invoke_bedrock_with_kb(history):
     """
-    Usa retrieve_and_generate com a última mensagem do usuário,
-    mas passa o histórico completo no fallback direto.
+    Faz retrieve no Knowledge Base e passa o contexto pro modelo via invoke_model.
     """
     user_text = history[-1]["content"]
-    client = boto3.client("bedrock-agent-runtime", region_name=AWS_REGION)
 
+    # Passo 1: Buscar contexto no Knowledge Base
+    kb_context = ""
     try:
-        response = client.retrieve_and_generate(
-            input={"text": user_text},
-            retrieveAndGenerateConfiguration={
-                "type": "KNOWLEDGE_BASE",
-                "knowledgeBaseConfiguration": {
-                    "knowledgeBaseId": KB_ID,
-                    "modelArn": f"arn:aws:bedrock:{AWS_REGION}::foundation-model/{BEDROCK_MODEL_ID}",
-                    "generationConfiguration": {
-                        "promptTemplate": {
-                            "textPromptTemplate": SYSTEM_PROMPT + "\n\nContexto da base de conhecimento:\n$search_results$\n\nSolicitação do vendedor:\n" + user_text
-                        }
-                    },
-                    "retrievalConfiguration": {
-                        "vectorSearchConfiguration": {
-                            "numberOfResults": 5
-                        }
-                    }
+        kb_client = boto3.client("bedrock-agent-runtime", region_name=AWS_REGION)
+        retrieve_response = kb_client.retrieve(
+            knowledgeBaseId=KB_ID,
+            retrievalQuery={"text": user_text},
+            retrievalConfiguration={
+                "vectorSearchConfiguration": {
+                    "numberOfResults": 5
                 }
             }
         )
-        return response["output"]["text"].strip()
+        results = retrieve_response.get("retrievalResults", [])
+        if results:
+            chunks = [r["content"]["text"] for r in results if r.get("content", {}).get("text")]
+            kb_context = "\n\n".join(chunks)
+            logger.info("KB retornou %d resultados.", len(chunks))
+        else:
+            logger.info("KB não retornou resultados.")
     except Exception as e:
-        logger.warning("KB retrieve_and_generate falhou, usando invoke_model direto: %s", str(e))
-        return invoke_bedrock_direct(history)
+        logger.warning("KB retrieve falhou: %s", str(e))
 
+    # Passo 2: Chamar modelo com contexto do KB + histórico
+    system_with_kb = SYSTEM_PROMPT
+    if kb_context:
+        system_with_kb += f"\n\nCONTEXTO DA BASE DE CONHECIMENTO:\n{kb_context}"
 
-def invoke_bedrock_direct(history):
-    """
-    Chama o modelo diretamente com histórico completo da conversa.
-    """
     client = boto3.client("bedrock-runtime", region_name=AWS_REGION)
-
     payload = {
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": 1024,
-        "system": SYSTEM_PROMPT,
+        "system": system_with_kb,
         "messages": history
     }
 
