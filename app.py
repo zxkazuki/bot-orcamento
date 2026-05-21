@@ -18,14 +18,50 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.6.0"
 
 # Histórico de conversa por chat_id: { chat_id: [{"role": "user/assistant", "content": "..."}] }
 conversation_history = {}
 
+# --- Subscribers do bot orçamentista ---
+SUBSCRIBERS_FILE = Path(__file__).parent / "subscribers.json"
+
+
+def load_subscribers():
+    """Carrega lista de chat_ids inscritos no bot do orçamentista."""
+    if SUBSCRIBERS_FILE.exists():
+        try:
+            return set(json.loads(SUBSCRIBERS_FILE.read_text()))
+        except (json.JSONDecodeError, TypeError):
+            return set()
+    return set()
+
+
+def save_subscribers(subscribers):
+    """Salva lista de subscribers em disco."""
+    SUBSCRIBERS_FILE.write_text(json.dumps(list(subscribers)))
+
+
+def add_subscriber(chat_id):
+    """Registra um novo subscriber."""
+    subscribers = load_subscribers()
+    subscribers.add(chat_id)
+    save_subscribers(subscribers)
+    logger.info("Subscriber adicionado: %s (total: %d)", chat_id, len(subscribers))
+
+
+def remove_subscriber(chat_id):
+    """Remove subscriber (ex: bot bloqueado)."""
+    subscribers = load_subscribers()
+    subscribers.discard(chat_id)
+    save_subscribers(subscribers)
+    logger.info("Subscriber removido: %s (total: %d)", chat_id, len(subscribers))
+
 TELEGRAM_ORCAMENTOS_TOKEN = os.environ.get("TELEGRAM_ORCAMENTOS_TOKEN", "")
 TELEGRAM_ORCAMENTISTA_TOKEN = os.environ.get("TELEGRAM_ORCAMENTISTA_TOKEN", "")
 CHAT_ID_ORCAMENTISTA = os.environ.get("CHAT_ID_ORCAMENTISTA", "")
+
+WEBHOOK_SECRET_TOKEN = os.environ.get("WEBHOOK_SECRET_TOKEN", "")
 
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 BEDROCK_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
@@ -133,6 +169,13 @@ Aguardo os dados do seu pedido!"""
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
+    # Validação do secret token do Telegram
+    if WEBHOOK_SECRET_TOKEN:
+        token_header = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if token_header != WEBHOOK_SECRET_TOKEN:
+            logger.warning("Request rejeitado: secret token inválido.")
+            return jsonify({"ok": False}), 403
+
     body = request.get_json(silent=True) or {}
     logger.info("Payload recebido: %s", json.dumps(body, ensure_ascii=False))
 
@@ -210,6 +253,39 @@ def webhook():
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "version": APP_VERSION})
+
+
+@app.route("/webhook-orcamentista", methods=["POST"])
+def webhook_orcamentista():
+    """Webhook do bot do orçamentista — registra subscribers."""
+    if WEBHOOK_SECRET_TOKEN:
+        token_header = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if token_header != WEBHOOK_SECRET_TOKEN:
+            return jsonify({"ok": False}), 403
+
+    body = request.get_json(silent=True) or {}
+
+    try:
+        chat_id, text = parse_telegram_event(body)
+    except TelegramParseError:
+        return jsonify({"ok": True})
+
+    if text and text.lower() == "/start":
+        add_subscriber(chat_id)
+        send_message_to_telegram(
+            token=TELEGRAM_ORCAMENTISTA_TOKEN,
+            chat_id=chat_id,
+            text="✅ Inscrito! Você receberá notificações de pedidos validados.\n\nEnvie /stop para parar de receber."
+        )
+    elif text and text.lower() == "/stop":
+        remove_subscriber(chat_id)
+        send_message_to_telegram(
+            token=TELEGRAM_ORCAMENTISTA_TOKEN,
+            chat_id=chat_id,
+            text="🔕 Desinscrito. Você não receberá mais notificações.\n\nEnvie /start para voltar a receber."
+        )
+
+    return jsonify({"ok": True})
 
 
 # --- Parsing ---
@@ -312,13 +388,21 @@ def route_response(chat_id, ai_response):
 
 
 def forward_to_orcamentista(ai_response):
-    message = f"📄 *Novo pedido validado automaticamente*\n\n{ai_response}"
-    send_message_to_telegram(
-        token=TELEGRAM_ORCAMENTISTA_TOKEN,
-        chat_id=CHAT_ID_ORCAMENTISTA,
-        text=message,
-        parse_mode="Markdown"
-    )
+    message = f"📄 Novo pedido validado automaticamente\n\n{ai_response}"
+    subscribers = load_subscribers()
+
+    if not subscribers:
+        logger.warning("Nenhum subscriber registrado no bot do orçamentista.")
+        return
+
+    for chat_id in list(subscribers):
+        success = send_message_to_telegram(
+            token=TELEGRAM_ORCAMENTISTA_TOKEN,
+            chat_id=chat_id,
+            text=message
+        )
+        if not success:
+            remove_subscriber(chat_id)
 
 
 # --- Telegram ---
@@ -353,12 +437,16 @@ def send_message_to_telegram(token, chat_id, text, parse_mode=None):
             result = json.loads(resp.read())
             if not result.get("ok"):
                 logger.error("Telegram API erro: %s", result)
+                return False
             else:
                 logger.info("Mensagem enviada com sucesso. chat_id=%s", chat_id)
+                return True
     except HTTPError as e:
-        logger.error("HTTPError Telegram: %s", e)
+        logger.error("HTTPError Telegram: %s (chat_id=%s)", e, chat_id)
+        return False
     except URLError as e:
-        logger.error("URLError Telegram: %s", e)
+        logger.error("URLError Telegram: %s (chat_id=%s)", e, chat_id)
+        return False
 
 
 # --- Exceções ---
